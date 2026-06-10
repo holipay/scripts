@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         知乎标题关键词屏蔽（精简版·可拖动·可最小化·带关键词列表）
 // @namespace    https://github.com/
-// @version      1.6
-// @description  知乎关键词屏蔽精简版，支持面板拖动+最小化，远程URL同步，修复清除后不恢复等Bug
+// @version      2.0
+// @description  知乎关键词屏蔽精简版，支持面板拖动+最小化，远程URL同步，性能优化版
 // @author       holipay
 // @match        *://*.zhihu.com/*
 // @grant        none
@@ -17,40 +17,68 @@
     const CARD_SELECTORS = '.TopstoryItem, .ContentItem, .List-item';
     const TITLE_SELECTORS = 'h2, .ContentItem-title, .TopstoryContent-title';
 
-    // ==================== 存储 ====================
+    // ==================== 存储 + 缓存 ====================
+    let _cachedWords = null;
+
     function getWords() {
-        try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; }
-        catch { return []; }
+        if (_cachedWords) return _cachedWords;
+        try { _cachedWords = JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; }
+        catch { _cachedWords = []; }
+        return _cachedWords;
     }
 
     function saveWords(words) {
+        _cachedWords = null;
         localStorage.setItem(STORAGE_KEY, JSON.stringify(words));
     }
 
-    // ==================== 【Bug1修复】核心过滤：隐藏匹配 + 恢复不匹配 ====================
+    // ==================== 核心过滤 ====================
+    // 记录上次的关键词列表指纹，避免关键词未变时重复扫描
+    let _lastWordsFingerprint = '';
+
     function filterContent() {
         const words = getWords().map(w => w.toLowerCase().trim()).filter(Boolean);
+        const fingerprint = words.join('|');
+
+        if (fingerprint === _lastWordsFingerprint) return;
+        _lastWordsFingerprint = fingerprint;
 
         document.querySelectorAll(CARD_SELECTORS).forEach(card => {
             if (words.length === 0) {
-                // 没有关键词 → 恢复所有卡片
                 card.style.display = '';
+                card.removeAttribute('data-zb-hidden');
                 return;
             }
             const title = card.querySelector(TITLE_SELECTORS)?.textContent.toLowerCase() || '';
             if (words.some(word => title.includes(word))) {
                 card.style.display = 'none';
+                card.setAttribute('data-zb-hidden', '1');
             } else {
-                card.style.display = ''; // 【关键】恢复之前被隐藏的卡片
+                card.style.display = '';
+                card.removeAttribute('data-zb-hidden');
             }
         });
     }
 
-    // 【Bug3修复】防抖版 filterContent，避免 MutationObserver 高频触发
+    // 仅处理新增卡片（关键词不变时高效跳过）
+    function filterNewCards() {
+        const words = getWords().map(w => w.toLowerCase().trim()).filter(Boolean);
+        if (!words.length) return;
+
+        document.querySelectorAll(CARD_SELECTORS + ':not([data-zb-processed])').forEach(card => {
+            card.setAttribute('data-zb-processed', '1');
+            const title = card.querySelector(TITLE_SELECTORS)?.textContent.toLowerCase() || '';
+            if (words.some(word => title.includes(word))) {
+                card.style.display = 'none';
+                card.setAttribute('data-zb-hidden', '1');
+            }
+        });
+    }
+
     let filterTimer = null;
-    function filterContentDebounced() {
+    function filterNewCardsDebounced() {
         if (filterTimer) clearTimeout(filterTimer);
-        filterTimer = setTimeout(filterContent, 300);
+        filterTimer = setTimeout(filterNewCards, 300);
     }
 
     // ==================== 远程同步关键词 ====================
@@ -73,7 +101,6 @@
             const remoteWords = await fetchRemoteWords(url);
             if (!remoteWords.length) { alert('远程列表为空'); return; }
             const localWords = getWords();
-            // 合并时做大小写不敏感去重（保留本地已有写法）
             const lowerLocal = localWords.map(w => w.toLowerCase());
             const newWords = remoteWords.filter(w => !lowerLocal.includes(w.toLowerCase()));
             const merged = [...localWords, ...newWords];
@@ -247,7 +274,6 @@
                     border-radius: 3px;
                     margin-bottom: 3px;
                 `;
-                // 【Bug4修复】用文本节点代替 textContent，避免与子元素冲突
                 const textSpan = document.createElement('span');
                 textSpan.textContent = word;
                 textSpan.style.cssText = 'flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;';
@@ -260,34 +286,37 @@
                     const newWords = getWords().filter((_, i) => i !== index);
                     saveWords(newWords);
                     renderWordList();
-                    filterContent();
+                    forceFilterAll();
                 };
                 wordItem.appendChild(deleteBtn);
                 wordList.appendChild(wordItem);
             });
         }
 
-        // ==================== 拖动 ====================
+        // ==================== 拖动（addEventListener + 边界检测）====================
         let isDragging = false, startX, startY, startLeft, startTop;
-        dragBar.onmousedown = e => {
+        dragBar.addEventListener('mousedown', e => {
             isDragging = true;
             startX = e.clientX;
             startY = e.clientY;
             const rect = panel.getBoundingClientRect();
             startLeft = rect.left;
             startTop = rect.top;
-            document.body.style.userSelect = 'none';
-        };
-        document.onmousemove = e => {
+            e.preventDefault();
+        });
+        document.addEventListener('mousemove', e => {
             if (!isDragging) return;
-            panel.style.left = startLeft + (e.clientX - startX) + 'px';
-            panel.style.top = startTop + (e.clientY - startY) + 'px';
+            let newLeft = startLeft + (e.clientX - startX);
+            let newTop = startTop + (e.clientY - startY);
+            const maxLeft = window.innerWidth - panel.offsetWidth;
+            const maxTop = window.innerHeight - panel.offsetHeight;
+            newLeft = Math.max(0, Math.min(newLeft, maxLeft));
+            newTop = Math.max(0, Math.min(newTop, maxTop));
+            panel.style.left = newLeft + 'px';
+            panel.style.top = newTop + 'px';
             panel.style.right = 'auto';
-        };
-        document.onmouseup = () => {
-            isDragging = false;
-            document.body.style.userSelect = '';
-        };
+        });
+        document.addEventListener('mouseup', () => { isDragging = false; });
 
         // ==================== 最小化 ====================
         let minimized = false;
@@ -298,10 +327,9 @@
             dragTitle.textContent = minimized ? '已最小化' : '知乎关键词屏蔽';
         };
 
-        // ==================== 【Bug2修复】关键词操作：只用 keydown，过滤中文输入法组合键 ====================
+        // ==================== 关键词操作：过滤中文输入法组合键 ====================
         input.addEventListener('keydown', e => {
             if (e.key !== 'Enter') return;
-            // 中文输入法确认时 e.isComposing 为 true，跳过
             if (e.isComposing) return;
             e.preventDefault();
             addKeyword(input.value);
@@ -311,13 +339,22 @@
             const word = raw.trim();
             if (!word) return;
             const words = getWords();
-            // 大小写不敏感去重
             if (!words.some(w => w.toLowerCase() === word.toLowerCase())) {
                 saveWords([...words, word]);
                 renderWordList();
-                filterContent();
+                forceFilterAll();
             }
             input.value = '';
+        }
+
+        // 强制全量刷新（关键词变化时调用，重置指纹并重扫所有卡片）
+        function forceFilterAll() {
+            _lastWordsFingerprint = '';
+            // 清除 processed 标记，让全量扫描重新检查所有卡片
+            document.querySelectorAll('[data-zb-processed]').forEach(el => {
+                el.removeAttribute('data-zb-processed');
+            });
+            filterContent();
         }
 
         // 清空
@@ -326,7 +363,7 @@
             if (confirm('确定清空所有关键词吗？')) {
                 saveWords([]);
                 renderWordList();
-                filterContent(); // 【Bug1】清除后会恢复所有隐藏内容
+                forceFilterAll();
             }
         };
 
@@ -335,10 +372,12 @@
             const words = getWords();
             if (!words.length) return alert('暂无关键词');
             const blob = new Blob([words.join('\n')], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
-            a.href = URL.createObjectURL(blob);
+            a.href = url;
             a.download = 'zhihu-block-keywords.txt';
             a.click();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
         };
 
         // 导入（合并）
@@ -358,7 +397,7 @@
                     const merged = [...existing, ...newWords];
                     saveWords(merged);
                     renderWordList();
-                    filterContent();
+                    forceFilterAll();
                     alert(`导入完成，新增 ${newWords.length} 个，当前共 ${merged.length} 个关键词`);
                 };
                 reader.readAsText(f);
@@ -371,15 +410,20 @@
     }
 
     // ==================== 初始化 ====================
+    let _observer = null;
+
     function init() {
         createPanel();
         filterContent();
-        // 【Bug3修复】用防抖版 MutationObserver
-        new MutationObserver(filterContentDebounced)
-            .observe(document.body, { childList: true, subtree: true });
+        _observer = new MutationObserver(filterNewCardsDebounced);
+        _observer.observe(document.body, { childList: true, subtree: true });
     }
 
-    // 【改善】用 requestAnimationFrame 等待 DOM 就绪，比 setTimeout 更可靠
+    window.addEventListener('beforeunload', () => {
+        if (_observer) _observer.disconnect();
+        if (filterTimer) clearTimeout(filterTimer);
+    });
+
     if (document.readyState === 'complete' || document.readyState === 'interactive') {
         init();
     } else {
