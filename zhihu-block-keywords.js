@@ -44,6 +44,7 @@
         _lastWordsFingerprint = fingerprint;
 
         document.querySelectorAll(CARD_SELECTORS).forEach(card => {
+            card.setAttribute('data-zb-processed', '1');
             if (words.length === 0) {
                 card.style.display = '';
                 card.removeAttribute('data-zb-hidden');
@@ -318,8 +319,11 @@
         });
         document.addEventListener('mouseup', () => { isDragging = false; });
 
-        // ==================== 最小化 ====================
-        let minimized = false;
+        // ==================== 最小化（默认最小化）====================
+        let minimized = true;
+        content.style.display = 'none';
+        minimizeBtn.textContent = '□';
+        dragTitle.textContent = '已最小化';
         minimizeBtn.onclick = () => {
             minimized = !minimized;
             content.style.display = minimized ? 'none' : 'block';

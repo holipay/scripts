@@ -171,30 +171,13 @@
     let _refreshTimer = null;
 
     function observe() {
-        new MutationObserver(mutations => {
+        new MutationObserver(() => {
             if (_observerTimer) return;
-            // 检查是否有新增节点（避免无意义的重扫）
-            let hasNewNodes = false;
-            for (const m of mutations) {
-                if (m.addedNodes.length > 0) { hasNewNodes = true; break; }
-            }
-            if (!hasNewNodes) return;
-
-            _observerTimer = requestAnimationFrame(() => {
+            _observerTimer = setTimeout(() => {
                 _observerTimer = null;
-                // 只对新增节点渲染按钮
-                for (const m of mutations) {
-                    m.addedNodes.forEach(node => {
-                        if (node.nodeType !== 1) return; // 跳过文本节点
-                        if (node.matches && node.matches('a.user-name')) {
-                            renderButtons(node.parentElement || document);
-                        } else if (node.querySelectorAll) {
-                            renderButtons(node);
-                        }
-                    });
-                }
+                renderButtons();
                 scanAndHide();
-            });
+            }, 300);
         }).observe(document.body, { childList: true, subtree: true });
     }
 
@@ -238,6 +221,7 @@
                 };
                 reader.readAsText(f);
             };
+            inp.value = '';
             inp.click();
         };
         body.appendChild(importBtn);
@@ -316,12 +300,20 @@
             });
         }
 
-        // 最小化
-        let min = false;
+        // 最小化（默认最小化）
+        let min = true;
+        body.style.display = 'none';
+        minBtn.textContent = '□';
         minBtn.onclick = () => {
             min = !min;
             body.style.display = min ? 'none' : 'block';
             minBtn.textContent = min ? '□' : '−';
+            if (min) {
+                clearInterval(_refreshTimer);
+                _refreshTimer = null;
+            } else {
+                _refreshTimer = setInterval(refreshCount, 3000);
+            }
         };
 
         // 拖动（使用 addEventListener，带边界检测）
@@ -349,11 +341,6 @@
         document.addEventListener('mouseup', () => { dragging = false; });
 
         document.body.appendChild(panel);
-
-        // 定期刷新计数（面板可见时才刷新）
-        _refreshTimer = setInterval(() => {
-            if (!min) refreshCount();
-        }, 3000);
     }
 
     // ====================== 启动 ======================
@@ -367,7 +354,7 @@
     // 清理定时器
     window.addEventListener('beforeunload', () => {
         if (_refreshTimer) clearInterval(_refreshTimer);
-        if (_observerTimer) cancelAnimationFrame(_observerTimer);
+        if (_observerTimer) clearTimeout(_observerTimer);
     });
 
     if (document.readyState === 'complete' || document.readyState === 'interactive') init();
